@@ -666,9 +666,15 @@ def page_search():
 
 
 def _semantic_search(se, yt_id=None):
+    # Use staging key so chips can populate the input before it renders
+    if "sem_q_staged" not in st.session_state:
+        st.session_state["sem_q_staged"] = ""
+
+    default_val = st.session_state.pop("sem_q_staged", "")
     query = st.text_input("",
         placeholder="Try: 'tense confrontation'  /  'product demo'  /  'emotional speech'  /  'cricket six'",
-        key="sem_q", label_visibility="collapsed")
+        key="sem_q", value=default_val,
+        label_visibility="collapsed")
 
     ca, cb, cc = st.columns([2, 1, 1])
     with ca:
@@ -693,7 +699,7 @@ def _semantic_search(se, yt_id=None):
         cols = st.columns(4)
         for i, ex in enumerate(examples):
             if cols[i % 4].button(ex, key=f"ex_{i}"):
-                st.session_state.sem_q = ex
+                st.session_state["sem_q_staged"] = ex
                 st.rerun()
         return
 
