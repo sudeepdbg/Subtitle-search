@@ -391,14 +391,48 @@ def _parse_ts(t: str) -> Optional[int]:
         return None
 
 def _yt_embed(vid_id: str, start_sec: int = 0):
-    """Render a YouTube iframe player."""
-    url = f"https://www.youtube.com/embed/{vid_id}?start={start_sec}&autoplay=0&rel=0&modestbranding=1"
+    """YouTube player using the IFrame API for real seek-to-time support."""
     st.markdown(f"""
-    <div class="yt-container">
-        <iframe src="{url}" frameborder="0"
+    <div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;
+                border-radius:10px;border:1px solid #e5e7eb;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+        <iframe
+            id="yt-player"
+            src="https://www.youtube.com/embed/{vid_id}?enablejsapi=1&start={start_sec}&rel=0&modestbranding=1&origin=https://streamlit.app"
+            style="position:absolute;top:0;left:0;width:100%;height:100%;"
+            frameborder="0"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowfullscreen></iframe>
+            allowfullscreen>
+        </iframe>
     </div>
+    <script>
+    // Seek the player to the requested time using postMessage (YouTube IFrame API)
+    (function() {{
+        var seekTo = {start_sec};
+        if (seekTo > 0) {{
+            // Wait for iframe to be ready then send seekTo command
+            function sendSeek() {{
+                var iframe = document.getElementById("yt-player");
+                if (iframe && iframe.contentWindow) {{
+                    iframe.contentWindow.postMessage(
+                        JSON.stringify({{
+                            event: "command",
+                            func: "seekTo",
+                            args: [seekTo, true]
+                        }}),
+                        "*"
+                    );
+                    iframe.contentWindow.postMessage(
+                        JSON.stringify({{event: "command", func: "playVideo", args: []}}),
+                        "*"
+                    );
+                }}
+            }}
+            // Try immediately and again after short delay
+            setTimeout(sendSeek, 800);
+            setTimeout(sendSeek, 2000);
+        }}
+    }})();
+    </script>
     """, unsafe_allow_html=True)
 
 def _scene_row(scene: Scene, vm: VideoMetadata = None, score: float = None,
@@ -432,13 +466,32 @@ def _scene_row(scene: Scene, vm: VideoMetadata = None, score: float = None,
         tags = _iab_str(scene.iab_categories)
         st.caption(f"**{tags}**  ·  engagement {scene.engagement_score:.2f}  ·  ad fit {scene.ad_suitability:.2f}")
 
-        # Jump to timestamp in player
+        # Jump to timestamp — use JS postMessage to seek without reloading iframe
         if show_jump and yt_id:
-            if st.button(f"▶ Play at {scene.start_fmt}", key=f"jump_{scene.scene_id}_{yt_id}"):
-                st.session_state["player_seek"] = scene.start_sec
-                st.session_state["player_yt_id"] = yt_id
-                st.session_state.page = "watch"
-                st.rerun()
+            seek_s = scene.start_sec
+            btn_col, _ = st.columns([2, 3])
+            with btn_col:
+                if st.button(f"▶ Play at {scene.start_fmt}", key=f"jump_{scene.scene_id}"):
+                    st.markdown(f"""
+                    <script>
+                    (function() {{
+                        function seekPlayer(t) {{
+                            // Try all iframes on the page
+                            var iframes = window.parent.document.querySelectorAll('iframe');
+                            iframes.forEach(function(iframe) {{
+                                try {{
+                                    iframe.contentWindow.postMessage(
+                                        JSON.stringify({{event:'command',func:'seekTo',args:[t,true]}}), '*');
+                                    iframe.contentWindow.postMessage(
+                                        JSON.stringify({{event:'command',func:'playVideo',args:[]}}), '*');
+                                }} catch(e) {{}}
+                            }});
+                        }}
+                        seekPlayer({seek_s});
+                        setTimeout(function(){{seekPlayer({seek_s});}}, 400);
+                    }})();
+                    </script>
+                    """, unsafe_allow_html=True)
 
         if score is not None:
             st.progress(min(score, 1.0))
@@ -622,8 +675,6 @@ def page_watch():
 
     # Try to find a YouTube ID for this video
     yt_id = getattr(vm, "yt_id", None) or st.session_state.get("last_yt_id")
-
-    start_sec = st.session_state.pop("player_seek", 0)
 
     if yt_id:
         # Side-by-side: player left, scene list right
