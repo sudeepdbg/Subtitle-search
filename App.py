@@ -390,13 +390,211 @@ def _parse_ts(t: str) -> Optional[int]:
     except ValueError:
         return None
 
+def _yt_player_with_scenes(vid_id: str, scenes: list, key_scene_ids: set):
+    """
+    Self-contained YouTube player + clickable scene list in a single HTML component.
+    All seeking happens inside the component via YouTube IFrame API — no Streamlit rerun needed.
+    """
+    import json
+
+    # Build scene data for JS
+    scene_data = []
+    for i, s in enumerate(scenes):
+        safety = s.brand_safety.get("safety_score", 1.0)
+        sent = s.sentiment.get("label", "neutral")
+        sent_icon = {"positive": "🟢", "negative": "🔴", "neutral": "🔵"}.get(sent, "🔵")
+        iab = "  ·  ".join(c["name"] for c in s.iab_categories[:2]) if s.iab_categories else ""
+        is_key = s.scene_id in key_scene_ids
+        scene_data.append({
+            "idx": i,
+            "start": s.start_sec,
+            "end": s.end_sec,
+            "start_fmt": s.start_fmt,
+            "end_fmt": s.end_fmt,
+            "dur": int(s.duration_sec),
+            "text": s.text[:220].replace('"', '\"').replace("\n", " "),
+            "sent_icon": sent_icon,
+            "sent": sent,
+            "safety": f"{safety:.0%}",
+            "iab": iab,
+            "eng": f"{s.engagement_score:.2f}",
+            "ad_fit": f"{s.ad_suitability:.2f}",
+            "is_key": is_key,
+        })
+
+    scenes_json = json.dumps(scene_data)
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: Inter, sans-serif; }}
+  body {{ background: #fff; }}
+  #wrapper {{ display: flex; gap: 16px; width: 100%; }}
+  #player-col {{ flex: 0 0 58%; }}
+  #player-wrap {{
+    position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;
+    border-radius: 10px; border: 1px solid #e5e7eb;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }}
+  #player-wrap iframe {{
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  }}
+  #now-playing {{
+    margin-top: 10px; padding: 8px 12px;
+    background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px;
+    font-size: 13px; color: #92400e; display: none;
+  }}
+  #scenes-col {{
+    flex: 1; height: 520px; overflow-y: auto;
+    border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px;
+    background: #fafafa;
+  }}
+  .scene-card {{
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 8px; cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }}
+  .scene-card:hover {{ border-color: #f59e0b; box-shadow: 0 2px 8px rgba(245,158,11,0.15); }}
+  .scene-card.active {{ border-color: #f59e0b; background: #fffbeb; box-shadow: 0 2px 8px rgba(245,158,11,0.2); }}
+  .scene-card.key {{ border-left: 3px solid #f59e0b; }}
+  .ts {{ font-family: monospace; font-size: 12px; color: #6b7280;
+          background: #f3f4f6; padding: 2px 7px; border-radius: 4px; }}
+  .dur {{ font-size: 12px; font-weight: 600; color: #374151; margin-left: 6px; }}
+  .badges {{ display: flex; gap: 6px; align-items: center; margin: 4px 0; font-size: 12px; color: #6b7280; }}
+  .scene-text {{ font-size: 13px; color: #374151; line-height: 1.5; margin: 6px 0 4px; }}
+  .iab {{ font-size: 11px; color: #9ca3af; }}
+  .play-btn {{
+    display: inline-flex; align-items: center; gap: 5px;
+    margin-top: 7px; padding: 5px 12px;
+    background: #f59e0b; color: #111; border: none; border-radius: 6px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: background 0.15s;
+  }}
+  .play-btn:hover {{ background: #d97706; }}
+  #filter-bar {{ display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }}
+  #filter-bar select, #filter-bar input {{
+    border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 8px;
+    font-size: 12px; background: #fff; color: #374151;
+  }}
+  #filter-bar label {{ font-size: 12px; color: #6b7280; font-weight: 500; }}
+  #scene-count {{ font-size: 12px; color: #9ca3af; margin-left: auto; }}
+</style>
+</head>
+<body>
+<div id="wrapper">
+  <div id="player-col">
+    <div id="player-wrap">
+      <iframe id="yt-iframe"
+        src="https://www.youtube.com/embed/{vid_id}?enablejsapi=1&rel=0&modestbranding=1&playsinline=1"
+        frameborder="0"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allowfullscreen></iframe>
+    </div>
+    <div id="now-playing">▶ Now playing from <span id="np-time"></span></div>
+  </div>
+
+  <div id="scenes-col">
+    <div id="filter-bar">
+      <label>Sentiment:</label>
+      <select id="sent-filter" onchange="renderScenes()">
+        <option value="all">All</option>
+        <option value="positive">Positive</option>
+        <option value="neutral">Neutral</option>
+        <option value="negative">Negative</option>
+      </select>
+      <label>Min ad fit:</label>
+      <input type="range" id="fit-filter" min="0" max="1" step="0.1" value="0"
+             oninput="document.getElementById('fit-val').textContent=this.value; renderScenes()">
+      <span id="fit-val" style="font-size:12px;color:#6b7280">0</span>
+      <span id="scene-count"></span>
+    </div>
+    <div id="scenes-list"></div>
+  </div>
+</div>
+
+<script>
+var scenes = {scenes_json};
+var player = null;
+var activeIdx = -1;
+
+// Load YouTube IFrame API
+var tag = document.createElement('script');
+tag.src = "https://www.youtube.com/iframe_api";
+document.head.appendChild(tag);
+
+function onYouTubeIframeAPIReady() {{
+  player = new YT.Player('yt-iframe', {{
+    events: {{ 'onReady': function(e) {{ console.log('YT player ready'); }} }}
+  }});
+}}
+
+function seekTo(startSec, idx, startFmt) {{
+  activeIdx = idx;
+  // Mark active card
+  document.querySelectorAll('.scene-card').forEach(function(c) {{ c.classList.remove('active'); }});
+  var card = document.getElementById('card-'+idx);
+  if (card) {{
+    card.classList.add('active');
+    card.scrollIntoView({{behavior:'smooth', block:'nearest'}});
+  }}
+  // Show now-playing banner
+  var np = document.getElementById('now-playing');
+  np.style.display = 'block';
+  document.getElementById('np-time').textContent = startFmt;
+  // Seek using YT API if available, else reload src with start param
+  if (player && player.seekTo) {{
+    player.seekTo(startSec, true);
+    player.playVideo();
+  }} else {{
+    // Fallback: reload iframe with start time
+    var iframe = document.getElementById('yt-iframe');
+    iframe.src = "https://www.youtube.com/embed/{vid_id}?enablejsapi=1&autoplay=1&start="+startSec+"&rel=0&modestbranding=1&playsinline=1";
+  }}
+}}
+
+function renderScenes() {{
+  var sentFilter = document.getElementById('sent-filter').value;
+  var fitFilter = parseFloat(document.getElementById('fit-filter').value);
+  var list = document.getElementById('scenes-list');
+  list.innerHTML = '';
+  var shown = 0;
+  scenes.forEach(function(s) {{
+    if (sentFilter !== 'all' && s.sent !== sentFilter) return;
+    if (parseFloat(s.ad_fit) < fitFilter) return;
+    shown++;
+    var keyClass = s.is_key ? ' key' : '';
+    var activeClass = s.idx === activeIdx ? ' active' : '';
+    var keyBadge = s.is_key ? ' ⭐' : '';
+    list.innerHTML += '<div class="scene-card'+keyClass+activeClass+'" id="card-'+s.idx+'">' +
+      '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">' +
+        '<span class="ts">'+s.start_fmt+' → '+s.end_fmt+'</span>' +
+        '<span class="dur">'+s.dur+'s'+keyBadge+'</span>' +
+      '</div>' +
+      '<div class="badges">'+s.sent_icon+' '+s.sent+' &nbsp;·&nbsp; 🛡 '+s.safety+'</div>' +
+      '<div class="scene-text">'+s.text+(s.text.length>=220?'…':'')+'</div>' +
+      '<div class="iab">'+s.iab+' &nbsp;·&nbsp; eng '+s.eng+' · ad fit '+s.ad_fit+'</div>' +
+      '<button class="play-btn" onclick="seekTo('+s.start+','+s.idx+',''+s.start_fmt+'')">▶ Play at '+s.start_fmt+'</button>' +
+    '</div>';
+  }});
+  document.getElementById('scene-count').textContent = shown + ' scenes';
+}}
+
+renderScenes();
+</script>
+</body>
+</html>
+"""
+    st.components.v1.html(html, height=580, scrolling=False)
+
+
 def _yt_embed(vid_id: str):
-    """YouTube embed player."""
+    """Simple YouTube embed (no scene list)."""
     st.markdown(f"""
     <div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;
                 border-radius:10px;border:1px solid #e5e7eb;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-        <iframe id="yt-player-{vid_id}"
-            src="https://www.youtube.com/embed/{vid_id}?enablejsapi=1&rel=0&modestbranding=1"
+        <iframe src="https://www.youtube.com/embed/{vid_id}?rel=0&modestbranding=1"
             style="position:absolute;top:0;left:0;width:100%;height:100%;"
             frameborder="0"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -607,11 +805,11 @@ def _summary_strip(vm: VideoMetadata):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 2 — WATCH & EXPLORE  (YouTube player + scene list side-by-side)
+# PAGE 2 — WATCH & EXPLORE
 # ══════════════════════════════════════════════════════════════════════════════
 def page_watch():
     st.markdown("## ▶️ Watch & Explore")
-    st.caption("Play the video and click any scene to jump directly to that moment")
+    st.caption("Player on the left — click any scene card to jump to that moment instantly")
     st.divider()
 
     if not st.session_state.videos:
@@ -622,68 +820,35 @@ def page_watch():
     if not vm:
         return
 
-    # Try to find a YouTube ID for this video
     yt_id = getattr(vm, "yt_id", None) or st.session_state.get("last_yt_id")
 
-    if yt_id:
-        # Side-by-side: player left, scene list right
-        col_player, col_scenes = st.columns([5, 3], gap="large")
-
-        with col_player:
-            st.caption(f"**{vm.title}**  ·  {vm.fmt_duration()}  ·  {vm.scene_count} scenes")
-            _yt_embed(yt_id)
-            st.caption("💡 Click **▶ Play at** buttons on any scene to jump to that moment")
-
-            # Mini stats under player
-            st.divider()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Scenes", vm.scene_count)
-            c2.metric("Duration", vm.fmt_duration())
-            avg_eng = round(sum(s.engagement_score for s in vm.scenes) / max(vm.scene_count, 1), 2)
-            c3.metric("Avg Engagement", avg_eng)
-
-            # Emotional arc
-            if vm.emotional_arc:
-                df = pd.DataFrame(vm.emotional_arc)
-                fig = px.area(df, x="start_sec", y="sentiment_score",
-                              color_discrete_sequence=[_AMBER])
-                fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.08)")
-                fig.update_layout(
-                    **PT, height=150, showlegend=False,
-                    xaxis=dict(**_XAXIS, title=""),
-                    yaxis=dict(**_YAXIS, title=""),
-                    title=dict(text="Emotional Arc", font=dict(size=11, color=_TEXT)),
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col_scenes:
-            st.caption("SCENES — click to jump in player")
-            # Filter controls
-            fc1, fc2 = st.columns(2)
-            with fc1:
-                sent_filter = st.multiselect("Sentiment",
-                    ["positive", "neutral", "negative"],
-                    default=["positive", "neutral", "negative"],
-                    key="w_sent",
-                    placeholder="Sentiment…")
-            with fc2:
-                min_suit = st.slider("Min ad fit", 0.0, 1.0, 0.0, 0.1,
-                                     key="w_suit")
-
-            filtered = [s for s in vm.scenes
-                        if s.sentiment.get("label", "neutral") in sent_filter
-                        and s.ad_suitability >= min_suit]
-            st.caption(f"**{len(filtered)}** of {vm.scene_count} scenes")
-            for scene in filtered:
-                _scene_row(scene, vm, show_jump=True, yt_id=yt_id)
-    else:
-        # No YouTube ID — show scene list with text only
-        st.info("**No YouTube player available** — this video was loaded from a file. "
-                "To enable the player, re-process via the **YouTube URL** tab or add the URL when uploading.")
+    if not yt_id:
+        st.warning("No YouTube link for this video. Re-process via the **YouTube URL** tab "
+                   "or paste a YouTube URL when uploading the SRT file.")
         st.divider()
-        st.markdown(f"### {vm.title}  ·  {vm.fmt_duration()}")
         for scene in vm.scenes:
             _scene_row(scene, vm)
+        return
+
+    st.caption(f"**{vm.title}**  ·  {vm.fmt_duration()}  ·  {vm.scene_count} scenes")
+
+    # ── All-in-one HTML component: player + scene list + seek ─────────────
+    _yt_player_with_scenes(yt_id, vm.scenes, set(vm.key_scenes))
+
+    # ── Emotional arc below player ─────────────────────────────────────────
+    if vm.emotional_arc:
+        st.divider()
+        df = pd.DataFrame(vm.emotional_arc)
+        fig = px.area(df, x="start_sec", y="sentiment_score",
+                      color_discrete_sequence=[_AMBER])
+        fig.add_hline(y=0, line_dash="dot", line_color="rgba(0,0,0,0.1)")
+        fig.update_layout(
+            **PT, height=150, showlegend=False,
+            xaxis=dict(**_XAXIS, title="Time (s)"),
+            yaxis=dict(**_YAXIS, title=""),
+            title=dict(text="Emotional Arc", font=dict(size=11, color=_TEXT)),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
