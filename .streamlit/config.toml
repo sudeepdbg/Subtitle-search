@@ -1,13 +1,10 @@
 [theme]
-base = "dark"
-backgroundColor = "#0c0d10"
-secondaryBackgroundColor = "#13151a"
-textColor = "#d4d8e1"
+base = "light"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8f9fa"
+textColor = "#111827"
 primaryColor = "#f59e0b"
 font = "sans serif"
 
 [client]
 showErrorDetails = false
-
-[server]
-runOnSave = false
