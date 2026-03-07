@@ -152,6 +152,21 @@ if st.session_state.search_engine is None:
 if st.session_state.ad_engine is None:
     st.session_state.ad_engine = AdMatchingEngine()
 
+# ── URL query param persistence (survive page refresh) ─────────────────────
+_qp = st.query_params
+if "page" in _qp and _qp["page"] in ("library","analyse","monetise","insights"):
+    if st.session_state.page == "library":          # only restore on first load
+        st.session_state.page = _qp["page"]
+if "vid" in _qp and _qp["vid"] in st.session_state.videos:
+    if st.session_state.selected_video is None:
+        st.session_state.selected_video = _qp["vid"]
+
+def _sync_qp():
+    """Call after any page/video change to keep URL in sync."""
+    st.query_params["page"] = st.session_state.page
+    if st.session_state.selected_video:
+        st.query_params["vid"] = st.session_state.selected_video
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOTLY THEME
 # ══════════════════════════════════════════════════════════════════════════════
@@ -184,6 +199,7 @@ with st.sidebar:
         else:
             if st.button(f"{icon}  {label}", key=f"nav_{pid}", use_container_width=True):
                 st.session_state.page = pid
+                _sync_qp()
                 st.rerun()
 
     st.markdown('<div style="height:1px;background:#1e293b;margin:16px 0"></div>', unsafe_allow_html=True)
@@ -261,6 +277,26 @@ def _tok(text: str) -> set:
     text = text.lower()
     text = re.sub(r"[&,\-/|]+", " ", text)
     return {w for w in text.split() if len(w) > 2}
+
+# ── Estimated CPM by IAB category (USD indicative ranges) ─────────────────
+_IAB_CPM = {
+    "Automotive":          (8, 18), "Finance":         (12, 28), "Technology":    (7, 16),
+    "Sports":              (6, 14), "Entertainment":   (4, 10),  "Travel":        (5, 13),
+    "Health & Fitness":    (5, 12), "Food & Drink":    (4, 9),   "Arts":          (3, 8),
+    "News":                (5, 14), "Education":       (4, 10),  "Business":      (9, 22),
+    "Shopping":            (5, 12), "Science":         (4, 9),   "Family":        (4, 9),
+    "Music":               (3, 7),  "default":         (3, 8),
+}
+
+def _est_cpm(scene: "Scene") -> tuple:
+    """Return (low_cpm, high_cpm) estimate in USD with engagement boost."""
+    iab = scene.iab_categories[0]["name"] if scene.iab_categories else ""
+    lo, hi = _IAB_CPM["default"]
+    for key, vals in _IAB_CPM.items():
+        if key != "default" and key.lower() in iab.lower():
+            lo, hi = vals; break
+    boost = 1 + scene.engagement_score * 0.4
+    return round(lo * boost, 2), round(hi * boost, 2)
 
 def _ad_similarity(ad: dict, scene: Scene) -> dict:
     tags = ad.get("tags","")
@@ -375,25 +411,50 @@ def page_library():
                 if vid_id in st.session_state.videos:
                     st.warning("This video is already in your library."); st.stop()
 
-                with st.spinner("Processing…"):
-                    # Try manual SRT first, then auto-fetch
-                    if manual_srt:
-                        transcript = manual_srt.read().decode("utf-8", errors="replace")
-                        fmt = "vtt" if manual_srt.name.lower().endswith(".vtt") else "srt"
-                    else:
-                        transcript = fetch_youtube_transcript(vid_id)
-                        fmt = "srt"
-                        if not transcript:
-                            st.error("❌ Could not auto-fetch transcript. Try uploading the SRT file manually (download from YouTube Studio → Subtitles, or use DownSub.com).")
-                            st.stop()
+                status = st.status("Processing video…", expanded=True)
+                try:
+                    with status:
+                        # Step 1: Transcript
+                        if manual_srt:
+                            st.write("📄 Using uploaded subtitle file…")
+                            transcript = manual_srt.read().decode("utf-8", errors="replace")
+                            fmt = "vtt" if manual_srt.name.lower().endswith(".vtt") else "srt"
+                        else:
+                            st.write("🌐 Fetching transcript from YouTube…")
+                            try:
+                                transcript = fetch_youtube_transcript(vid_id)
+                            except Exception as e:
+                                transcript = None
+                                st.warning(f"Auto-fetch error: {e}")
+                            if not transcript:
+                                status.update(label="❌ Transcript unavailable", state="error")
+                                st.error("Could not fetch transcript. Try uploading an SRT file (download from YouTube Studio → Subtitles, or use DownSub.com).")
+                                st.stop()
+                            fmt = "srt"
 
-                    meta  = fetch_youtube_metadata(vid_id, st.session_state.yt_api_key or None)
-                    title = meta.get("title", f"YouTube · {vid_id}") if meta else f"YouTube · {vid_id}"
-                    vm    = VideoProcessor(min_s, max_s, sens).process_file(transcript, title, fmt)
-                    vm.yt_id = vid_id
+                        # Step 2: Metadata
+                        st.write("📋 Fetching video metadata…")
+                        try:
+                            meta  = fetch_youtube_metadata(vid_id, st.session_state.yt_api_key or None)
+                            title = meta.get("title", f"YouTube · {vid_id}") if meta else f"YouTube · {vid_id}"
+                        except Exception:
+                            title = f"YouTube · {vid_id}"
 
-                _register(vm)
-                st.success(f"✅ **{vm.title}** — {vm.scene_count} scenes detected")
+                        # Step 3: Scene detection
+                        st.write("🔬 Detecting scenes & classifying content…")
+                        vm = VideoProcessor(min_s, max_s, sens).process_file(transcript, title, fmt)
+                        vm.yt_id = vid_id
+
+                        # Step 4: Indexing
+                        st.write(f"🗂️ Indexing {vm.scene_count} scenes…")
+                        _register(vm)
+                        _sync_qp()
+
+                        status.update(label=f"✅ Done — {vm.scene_count} scenes detected", state="complete")
+                except Exception as e:
+                    status.update(label="❌ Processing failed", state="error")
+                    st.error(f"Unexpected error: {e}")
+                    st.stop()
                 st.rerun()
 
         # ── Upload ──
@@ -406,7 +467,12 @@ def page_library():
                     type=["srt","vtt"], key="lib_srt")
                 title_in = st.text_input("Video title", placeholder="e.g. Spider-Man No Way Home", key="lib_title")
                 if not srt_file:
-                    st.info("📌 A subtitle/transcript file is required for scene analysis. Video file is optional (enables live player).")
+                    st.info("📌 Subtitle file required. Video file is optional (enables live player).")
+                else:
+                    prev = srt_file.read(); srt_file.seek(0)
+                    prev_lines = [l for l in prev.decode("utf-8","replace").split("\n") if l.strip()]
+                    with st.expander("📄 Subtitle preview — confirm format looks correct"):
+                        st.code("\n".join(prev_lines[:20]), language=None)
             with c2:
                 st.markdown("**Detection settings**")
                 min_s = st.slider("Min scene (s)", 10, 90, 20, 5,    key="lib_u_min")
@@ -414,32 +480,75 @@ def page_library():
                 sens  = st.slider("Sensitivity",   0.2, 0.7, 0.35, 0.05, key="lib_u_sens")
 
             if srt_file and st.button("⚡ Process Video", type="primary", key="lib_up_go"):
+                srt_file.seek(0)
                 srt_content = srt_file.read().decode("utf-8", errors="replace")
                 fmt   = "vtt" if srt_file.name.lower().endswith(".vtt") else "srt"
                 title = title_in.strip() or (mp4_file.name if mp4_file else "Uploaded Video")
-                with st.spinner("Detecting scenes · classifying content · analysing sentiment…"):
-                    vm = VideoProcessor(min_s, max_s, sens).process_file(srt_content, title, fmt)
-                if not vm.scenes:
-                    st.error("No scenes detected — check subtitle format."); st.stop()
-                vm.yt_id = None
-                _register(vm)
-                if mp4_file:
-                    mp4_file.seek(0)
-                    raw = mp4_file.read()
-                    st.session_state.video_b64[vm.video_id]  = _b64.b64encode(raw).decode()
-                    ext = mp4_file.name.split(".")[-1].lower()
-                    st.session_state.video_mime[vm.video_id] = {
-                        "mp4":"video/mp4","mov":"video/mp4",
-                        "webm":"video/webm","avi":"video/x-msvideo"}.get(ext,"video/mp4")
-                st.success(f"✅ **{vm.title}** — {vm.scene_count} scenes"); st.rerun()
+                status = st.status("Processing video...", expanded=True)
+                try:
+                    with status:
+                        st.write("🔬 Detecting scenes & classifying content...")
+                        vm = VideoProcessor(min_s, max_s, sens).process_file(srt_content, title, fmt)
+                        if not vm.scenes:
+                            status.update(label="❌ No scenes detected", state="error")
+                            st.error("No scenes detected — check subtitle format."); st.stop()
+                        vm.yt_id = None
+                        if mp4_file:
+                            st.write("🎞️ Loading video file...")
+                            mp4_file.seek(0); raw = mp4_file.read()
+                            st.session_state.video_b64[vm.video_id]  = _b64.b64encode(raw).decode()
+                            ext = mp4_file.name.split(".")[-1].lower()
+                            st.session_state.video_mime[vm.video_id] = {
+                                "mp4":"video/mp4","mov":"video/mp4",
+                                "webm":"video/webm","avi":"video/x-msvideo"}.get(ext,"video/mp4")
+                        st.write(f"🗂️ Indexing {vm.scene_count} scenes...")
+                        _register(vm); _sync_qp()
+                        status.update(label=f"✅ {vm.scene_count} scenes detected", state="complete")
+                except Exception as e:
+                    status.update(label="❌ Processing failed", state="error")
+                    st.error(f"Error: {e}"); st.stop()
+                st.rerun()
 
     # ── Library ────────────────────────────────────────────────────────────
     if not st.session_state.videos:
-        st.markdown("""<div style="text-align:center;padding:60px 20px;color:#9ca3af">
+        st.markdown("""<div style="text-align:center;padding:40px 20px 16px">
           <div style="font-size:3rem">🎬</div>
-          <div style="font-size:1.1rem;font-weight:600;margin-top:12px">No videos yet</div>
-          <div style="margin-top:6px">Use "Add a Video" above to get started</div>
+          <div style="font-size:1.2rem;font-weight:700;margin-top:12px;color:#111827">No videos yet</div>
+          <div style="color:#6b7280;margin-top:6px">Add a video above — or try a demo to explore the platform</div>
         </div>""", unsafe_allow_html=True)
+        demo_col, _ = st.columns([2, 3])
+        with demo_col:
+            with st.container(border=True):
+                st.markdown("**🎬 Load a demo video**")
+                st.caption("Sample YouTube videos with auto-detected scenes")
+                demos = {
+                    "TED Talk — Do schools kill creativity?": "iG9CE55wbtY",
+                    "NASA Artemis Launch Highlights":         "KHFozTSMzqA",
+                    "Veritasium — How Electricity Works":     "oI_X2cMHNe0",
+                }
+                demo_choice = st.selectbox("Choose demo", list(demos.keys()), key="demo_sel")
+                if st.button("⚡ Load Demo", type="primary", key="demo_load"):
+                    demo_id = demos[demo_choice]
+                    if demo_id not in st.session_state.videos:
+                        status = st.status("Loading demo...", expanded=True)
+                        try:
+                            with status:
+                                st.write("🌐 Fetching transcript...")
+                                try:    transcript = fetch_youtube_transcript(demo_id)
+                                except: transcript = None
+                                if not transcript:
+                                    status.update(label="❌ Demo unavailable", state="error")
+                                    st.error("Could not fetch demo. Try adding a video manually."); st.stop()
+                                meta  = fetch_youtube_metadata(demo_id, st.session_state.yt_api_key or None)
+                                title = meta.get("title", demo_choice) if meta else demo_choice
+                                st.write("🔬 Detecting scenes...")
+                                vm = VideoProcessor(20, 120, 0.35).process_file(transcript, title, "srt")
+                                vm.yt_id = demo_id
+                                _register(vm); _sync_qp()
+                                status.update(label=f"✅ {vm.scene_count} scenes", state="complete")
+                        except Exception as e:
+                            st.error(f"Error: {e}"); st.stop()
+                    st.rerun()
         return
 
     # KPI row
@@ -547,7 +656,13 @@ def page_analyse():
         if yt_id:
             _yt_player_with_scenes(yt_id, vm.scenes, vm.key_scenes)
         elif has_mp4:
-            _mp4_player_with_scenes(vm)
+            # st.video() for simple browsing - lighter than custom player
+            b64  = st.session_state.video_b64[vm.video_id]
+            mime = st.session_state.video_mime.get(vm.video_id, "video/mp4")
+            import base64 as _b64v
+            raw_bytes = _b64v.b64decode(b64)
+            st.video(raw_bytes, format=mime)
+            st.caption("💡 Use the **Monetise** tab for the full ad-injection player with scene navigation.")
         else:
             st.info("No playable video — explore scenes in the other tabs.")
             for s in vm.scenes[:6]:
@@ -678,11 +793,13 @@ def _ad_opportunity_panel(vm: VideoMetadata, yt_id=None):
             if tag_html: st.markdown(tag_html, unsafe_allow_html=True)
 
             # Signal breakdown
-            sig_cols = st.columns(4)
+            cpm_lo, cpm_hi = _est_cpm(scene)
+            sig_cols = st.columns(5)
             sig_cols[0].metric("Engagement",  f"{scene.engagement_score:.0%}")
             sig_cols[1].metric("Ad Fit",       f"{scene.ad_suitability:.0%}")
             sig_cols[2].metric("Brand Safety", f"{safety:.0%}")
             sig_cols[3].metric("Ad Match",     f"{sim['total']:.0%}")
+            sig_cols[4].metric("Est. CPM",     f"${cpm_lo:.0f}–${cpm_hi:.0f}", help="Estimated CPM range (USD) based on content category + engagement. Indicative only.")
 
             # Actions
             ac1, ac2, ac3 = st.columns(3)
@@ -821,6 +938,7 @@ body{{background:#fff;padding:4px 0}}
 <div id="info">Hover over a scene for details</div>
 <script>
 var SC={sj},MK={markers_j};
+var MAXSEG=200; if(SC.length>MAXSEG){{ SC=SC.slice(0,MAXSEG); }}
 var dur=SC.length>0?SC[SC.length-1].end:1;
 var tl=document.getElementById('tl'),tt=document.getElementById('tt');
 
@@ -1025,6 +1143,11 @@ VID.addEventListener('timeupdate',function(){{
 }});
 function toggle(){{VID.paused?VID.play():VID.pause();}}
 function sb(e){{var r=document.getElementById('pw').getBoundingClientRect();VID.currentTime=((e.clientX-r.left)/r.width)*(VID.duration||0);}}
+document.addEventListener('keydown',function(e){{
+  if(e.code==='Space'){{e.preventDefault();toggle();}}
+  else if(e.code==='ArrowLeft'){{e.preventDefault();VID.currentTime=Math.max(0,VID.currentTime-5);}}
+  else if(e.code==='ArrowRight'){{e.preventDefault();VID.currentTime=Math.min(VID.duration||0,VID.currentTime+5);}}
+}});
 var sl=document.getElementById('sl');
 SC.forEach(function(s){{
   var d=document.createElement('div');d.className='card'+(s.key?' key':'');d.id='c'+s.idx;
@@ -1367,6 +1490,13 @@ function skip(){{clearInterval(cdt);adOn=false;document.getElementById('ov').sty
 function toggle(){{VID.paused?VID.play():VID.pause();}}
 function seekBar(e){{var r=document.getElementById('pw').getBoundingClientRect();VID.currentTime=((e.clientX-r.left)/r.width)*(VID.duration||0);}}
 function mute(){{VID.muted=!VID.muted;document.getElementById('vi').textContent=VID.muted?'🔇':'🔊';}}
+document.addEventListener('keydown',function(e){{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(e.code==='Space'){{e.preventDefault();if(!adOn)toggle();}}
+  else if(e.code==='ArrowLeft'){{e.preventDefault();VID.currentTime=Math.max(0,VID.currentTime-5);}}
+  else if(e.code==='ArrowRight'){{e.preventDefault();VID.currentTime=Math.min(VID.duration||0,VID.currentTime+5);}}
+  else if(e.code==='KeyM'){{mute();}}
+}});
 </script></body></html>"""
     st.components.v1.html(html,height=680,scrolling=False)
 
@@ -1394,7 +1524,7 @@ def page_insights():
     c5.metric("Avg Ad Fit",      f"{sum(s.ad_suitability for s in all_s)/max(n_s,1):.0%}")
     st.divider()
 
-    t1,t2,t3,t4=st.tabs(["🏷️  Content","⚡  Engagement","📢  Ad Intelligence","📹  Compare"])
+    t1,t2,t3,t4,t5=st.tabs(["🏷️  Content","⚡  Engagement","📢  Ad Intelligence","📹  Compare","📥  Export"])
 
     with t1:
         c1,c2=st.columns(2)
@@ -1455,6 +1585,85 @@ def page_insights():
                 fig5.add_trace(go.Scatterpolar(r=vals+[vals[0]],theta=metrics+[metrics[0]],name=vm.title[:20],fill="toself",opacity=0.6))
             fig5.update_layout(**PT,height=340,polar=dict(radialaxis=dict(visible=True,range=[0,1],gridcolor=_GRID,tickfont=dict(color=_TEXT,size=9))),showlegend=True,legend=dict(bgcolor="rgba(0,0,0,0)",font=dict(color=_TEXT)))
             st.plotly_chart(fig5,use_container_width=True)
+
+    with t5:
+        st.markdown("#### 📥 Export Data")
+        st.caption("Download your analysis as CSV files for use in Excel, ad platforms, or reporting tools")
+
+        exp1, exp2, exp3 = st.columns(3)
+
+        # Export 1: All scenes
+        all_scene_rows = []
+        for vm in vms:
+            for s in vm.scenes:
+                cpm_lo, cpm_hi = _est_cpm(s)
+                ad, sim = _best_ad_for_scene(s)
+                all_scene_rows.append({
+                    "Video": vm.title, "Scene ID": s.scene_id,
+                    "Start": s.start_fmt, "End": s.end_fmt,
+                    "Duration (s)": int(s.duration_sec),
+                    "Sentiment": s.sentiment.get("label","neutral"),
+                    "Engagement": round(s.engagement_score,3),
+                    "Ad Fit": round(s.ad_suitability,3),
+                    "Brand Safety": round(s.brand_safety.get("safety_score",1),3),
+                    "IAB Category": s.iab_categories[0]["name"] if s.iab_categories else "",
+                    "Key Moment": s.scene_id in vm.key_scenes,
+                    "Best Ad Brand": ad["brand"], "Ad Match": round(sim["total"],3),
+                    "Est CPM Low ($)": cpm_lo, "Est CPM High ($)": cpm_hi,
+                    "Text Preview": s.text[:100],
+                })
+        df_scenes = pd.DataFrame(all_scene_rows)
+        exp1.download_button(
+            "📄 All Scenes CSV", df_scenes.to_csv(index=False).encode(),
+            "semantix_scenes.csv", "text/csv",
+            use_container_width=True, key="dl_scenes")
+        exp1.caption(f"{len(all_scene_rows)} rows · scenes + signals + CPM")
+
+        # Export 2: Ad opportunities
+        opp_rows = []
+        for vm in vms:
+            def _opp_e(s): return s.ad_suitability*s.engagement_score*s.brand_safety.get("safety_score",1)
+            for s in sorted(vm.scenes, key=_opp_e, reverse=True)[:10]:
+                cpm_lo, cpm_hi = _est_cpm(s)
+                ad, sim = _best_ad_for_scene(s)
+                opp_rows.append({
+                    "Video": vm.title, "Timestamp": s.start_fmt,
+                    "Opportunity Score": round(_opp_e(s),3),
+                    "Key Moment": s.scene_id in vm.key_scenes,
+                    "Best Ad": ad["brand"], "Ad Match": round(sim["total"],3),
+                    "Matched IAB": ", ".join(sim["matched_iab"][:3]),
+                    "Est CPM Low ($)": cpm_lo, "Est CPM High ($)": cpm_hi,
+                    "IAB": s.iab_categories[0]["name"] if s.iab_categories else "",
+                })
+        df_opps = pd.DataFrame(opp_rows)
+        exp2.download_button(
+            "🎯 Ad Opportunities CSV", df_opps.to_csv(index=False).encode(),
+            "semantix_opportunities.csv", "text/csv",
+            use_container_width=True, key="dl_opps")
+        exp2.caption(f"{len(opp_rows)} rows · top 10 per video")
+
+        # Export 3: Ad schedules
+        sched_rows = []
+        for vid_id, markers in st.session_state.ad_markers.items():
+            vm_s = st.session_state.videos.get(vid_id)
+            if not vm_s or not markers: continue
+            for m in sorted(markers, key=lambda x: x["sec"]):
+                sched_rows.append({
+                    "Video": vm_s.title, "Type": "pre-roll" if m["sec"]==0 else "mid-roll",
+                    "Timestamp": m["fmt"], "Brand": m["ad"]["brand"],
+                    "Ad Title": m["ad"]["title"], "Duration (s)": m.get("duration",15),
+                    "Match Score": round(m.get("sim",0),3),
+                    "Added By": m.get("mode","manual"),
+                })
+        if sched_rows:
+            df_sched = pd.DataFrame(sched_rows)
+            exp3.download_button(
+                "📋 Ad Schedule CSV", df_sched.to_csv(index=False).encode(),
+                "semantix_schedule.csv", "text/csv",
+                use_container_width=True, key="dl_sched")
+            exp3.caption(f"{len(sched_rows)} markers across {len(st.session_state.ad_markers)} videos")
+        else:
+            exp3.info("Build an ad plan in Monetise first")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
