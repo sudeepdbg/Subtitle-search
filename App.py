@@ -112,6 +112,19 @@ input::placeholder,textarea::placeholder{color:#9ca3af!important}
   background:#fff!important;border:1px solid #d1d5db!important;
   color:#374151!important;border-radius:6px!important}
 
+/* ── Expander: prevent header overlap with first widget ── */
+[data-testid="stExpander"]{position:relative!important}
+[data-testid="stExpander"] summary{
+  position:relative!important;z-index:10!important;
+  background:#ffffff!important;border-radius:8px!important;
+  border:1px solid #e5e7eb!important;padding:10px 16px!important;
+  font-weight:600!important;color:#111827!important}
+[data-testid="stExpander"] summary:hover{background:#f9fafb!important}
+[data-testid="stExpander"]>div:last-child{
+  padding-top:16px!important;margin-top:4px!important;
+  border:1px solid #e5e7eb!important;border-top:none!important;
+  border-radius:0 0 8px 8px!important;background:#ffffff!important}
+
 /* ── Misc ── */
 [data-testid="stProgress"]>div>div{background:#f59e0b!important}
 [data-testid="stProgress"]>div{background:#f3f4f6!important}
@@ -380,29 +393,40 @@ def page_library():
     st.divider()
 
     # ── Add Video panel ────────────────────────────────────────────────────
-    with st.expander("➕  Add a Video", expanded=not bool(st.session_state.videos)):
-        src = st.radio("Source", ["YouTube URL", "Upload MP4 + Subtitle"], horizontal=True, key="lib_src")
-        st.markdown("")
+    # Use a toggle button instead of expander to avoid Streamlit header overlap bug
+    if "lib_open" not in st.session_state:
+        st.session_state.lib_open = not bool(st.session_state.videos)
 
-        # ── YouTube ──
-        if src == "YouTube URL":
-            yt_url = st.text_input("YouTube URL or video ID",
-                placeholder="https://youtube.com/watch?v=… or paste the 11-char video ID", key="lib_yt")
+    btn_label = "➖  Close" if st.session_state.lib_open else "➕  Add a Video"
+    if st.button(btn_label, key="lib_toggle"):
+        st.session_state.lib_open = not st.session_state.lib_open
+        st.rerun()
 
-            # Manual SRT fallback
-            st.markdown("**Subtitle file** *(optional — upload if auto-fetch fails)*")
-            manual_srt = st.file_uploader("Upload .srt or .vtt (leave empty to auto-fetch)",
-                type=["srt","vtt"], key="lib_yt_srt")
-            if manual_srt:
-                st.success(f"✅ Using uploaded subtitle: {manual_srt.name}")
-            else:
-                st.caption("ℹ️ Auto-fetch works for most public videos. If it fails, download the SRT from YouTube Studio or DownSub.com and upload it here.")
+    if st.session_state.lib_open:
+        with st.container(border=True):
+            st.markdown("")   # top breathing room
+            src = st.radio("Source", ["YouTube URL", "Upload MP4 + Subtitle"], horizontal=True, key="lib_src")
+            st.divider()
 
-            with st.expander("⚙️ Detection settings"):
-                a1,a2,a3 = st.columns(3)
-                min_s = a1.slider("Min scene (s)", 10, 90, 20, 5, key="lib_min")
-                max_s = a2.slider("Max scene (s)", 60, 300, 120, 10, key="lib_max")
-                sens  = a3.slider("Sensitivity", 0.2, 0.7, 0.35, 0.05, key="lib_sens")
+            # ── YouTube ──
+            if src == "YouTube URL":
+                yt_url = st.text_input("YouTube URL or video ID",
+                    placeholder="https://youtube.com/watch?v=… or paste the 11-char video ID", key="lib_yt")
+
+                # Manual SRT fallback
+                st.markdown("**Subtitle file** *(optional — upload if auto-fetch fails)*")
+                manual_srt = st.file_uploader("Upload .srt or .vtt (leave empty to auto-fetch)",
+                    type=["srt","vtt"], key="lib_yt_srt")
+                if manual_srt:
+                    st.success(f"✅ Using uploaded subtitle: {manual_srt.name}")
+                else:
+                    st.caption("ℹ️ Auto-fetch works for most public videos. If it fails, download the SRT from YouTube Studio or DownSub.com and upload it here.")
+
+                with st.expander("⚙️ Detection settings"):
+                    a1,a2,a3 = st.columns(3)
+                    min_s = a1.slider("Min scene (s)", 10, 90, 20, 5, key="lib_min")
+                    max_s = a2.slider("Max scene (s)", 60, 300, 120, 10, key="lib_max")
+                    sens  = a3.slider("Sensitivity", 0.2, 0.7, 0.35, 0.05, key="lib_sens")
 
             if st.button("⚡ Process YouTube Video", type="primary", key="lib_yt_go"):
                 vid_id = _yt_id(yt_url.strip()) if yt_url else None
@@ -457,57 +481,57 @@ def page_library():
                     st.stop()
                 st.rerun()
 
-        # ── Upload ──
-        else:
-            c1, c2 = st.columns([3, 2], gap="large")
-            with c1:
-                mp4_file = st.file_uploader("Video file (MP4, MOV, WebM — optional for player)",
-                    type=["mp4","mov","webm","avi"], key="lib_mp4")
-                srt_file = st.file_uploader("Subtitle file (.srt or .vtt) — required for analysis",
-                    type=["srt","vtt"], key="lib_srt")
-                title_in = st.text_input("Video title", placeholder="e.g. Spider-Man No Way Home", key="lib_title")
-                if not srt_file:
-                    st.info("📌 Subtitle file required. Video file is optional (enables live player).")
-                else:
-                    prev = srt_file.read(); srt_file.seek(0)
-                    prev_lines = [l for l in prev.decode("utf-8","replace").split("\n") if l.strip()]
-                    with st.expander("📄 Subtitle preview — confirm format looks correct"):
-                        st.code("\n".join(prev_lines[:20]), language=None)
-            with c2:
-                st.markdown("**Detection settings**")
-                min_s = st.slider("Min scene (s)", 10, 90, 20, 5,    key="lib_u_min")
-                max_s = st.slider("Max scene (s)", 60, 300, 120, 10,  key="lib_u_max")
-                sens  = st.slider("Sensitivity",   0.2, 0.7, 0.35, 0.05, key="lib_u_sens")
+            # ── Upload ──
+            else:
+                c1, c2 = st.columns([3, 2], gap="large")
+                with c1:
+                    mp4_file = st.file_uploader("Video file (MP4, MOV, WebM — optional for player)",
+                        type=["mp4","mov","webm","avi"], key="lib_mp4")
+                    srt_file = st.file_uploader("Subtitle file (.srt or .vtt) — required for analysis",
+                        type=["srt","vtt"], key="lib_srt")
+                    title_in = st.text_input("Video title", placeholder="e.g. Spider-Man No Way Home", key="lib_title")
+                    if not srt_file:
+                        st.info("📌 Subtitle file required. Video file is optional (enables live player).")
+                    else:
+                        prev = srt_file.read(); srt_file.seek(0)
+                        prev_lines = [l for l in prev.decode("utf-8","replace").split("\n") if l.strip()]
+                        with st.expander("📄 Subtitle preview — confirm format looks correct"):
+                            st.code("\n".join(prev_lines[:20]), language=None)
+                with c2:
+                    st.markdown("**Detection settings**")
+                    min_s = st.slider("Min scene (s)", 10, 90, 20, 5,    key="lib_u_min")
+                    max_s = st.slider("Max scene (s)", 60, 300, 120, 10,  key="lib_u_max")
+                    sens  = st.slider("Sensitivity",   0.2, 0.7, 0.35, 0.05, key="lib_u_sens")
 
-            if srt_file and st.button("⚡ Process Video", type="primary", key="lib_up_go"):
-                srt_file.seek(0)
-                srt_content = srt_file.read().decode("utf-8", errors="replace")
-                fmt   = "vtt" if srt_file.name.lower().endswith(".vtt") else "srt"
-                title = title_in.strip() or (mp4_file.name if mp4_file else "Uploaded Video")
-                status = st.status("Processing video...", expanded=True)
-                try:
-                    with status:
-                        st.write("🔬 Detecting scenes & classifying content...")
-                        vm = VideoProcessor(min_s, max_s, sens).process_file(srt_content, title, fmt)
-                        if not vm.scenes:
-                            status.update(label="❌ No scenes detected", state="error")
-                            st.error("No scenes detected — check subtitle format."); st.stop()
-                        vm.yt_id = None
-                        if mp4_file:
-                            st.write("🎞️ Loading video file...")
-                            mp4_file.seek(0); raw = mp4_file.read()
-                            st.session_state.video_b64[vm.video_id]  = _b64.b64encode(raw).decode()
-                            ext = mp4_file.name.split(".")[-1].lower()
-                            st.session_state.video_mime[vm.video_id] = {
-                                "mp4":"video/mp4","mov":"video/mp4",
-                                "webm":"video/webm","avi":"video/x-msvideo"}.get(ext,"video/mp4")
-                        st.write(f"🗂️ Indexing {vm.scene_count} scenes...")
-                        _register(vm); _sync_qp()
-                        status.update(label=f"✅ {vm.scene_count} scenes detected", state="complete")
-                except Exception as e:
-                    status.update(label="❌ Processing failed", state="error")
-                    st.error(f"Error: {e}"); st.stop()
-                st.rerun()
+                if srt_file and st.button("⚡ Process Video", type="primary", key="lib_up_go"):
+                    srt_file.seek(0)
+                    srt_content = srt_file.read().decode("utf-8", errors="replace")
+                    fmt   = "vtt" if srt_file.name.lower().endswith(".vtt") else "srt"
+                    title = title_in.strip() or (mp4_file.name if mp4_file else "Uploaded Video")
+                    status = st.status("Processing video...", expanded=True)
+                    try:
+                        with status:
+                            st.write("🔬 Detecting scenes & classifying content...")
+                            vm = VideoProcessor(min_s, max_s, sens).process_file(srt_content, title, fmt)
+                            if not vm.scenes:
+                                status.update(label="❌ No scenes detected", state="error")
+                                st.error("No scenes detected — check subtitle format."); st.stop()
+                            vm.yt_id = None
+                            if mp4_file:
+                                st.write("🎞️ Loading video file...")
+                                mp4_file.seek(0); raw = mp4_file.read()
+                                st.session_state.video_b64[vm.video_id]  = _b64.b64encode(raw).decode()
+                                ext = mp4_file.name.split(".")[-1].lower()
+                                st.session_state.video_mime[vm.video_id] = {
+                                    "mp4":"video/mp4","mov":"video/mp4",
+                                    "webm":"video/webm","avi":"video/x-msvideo"}.get(ext,"video/mp4")
+                            st.write(f"🗂️ Indexing {vm.scene_count} scenes...")
+                            _register(vm); _sync_qp()
+                            status.update(label=f"✅ {vm.scene_count} scenes detected", state="complete")
+                    except Exception as e:
+                        status.update(label="❌ Processing failed", state="error")
+                        st.error(f"Error: {e}"); st.stop()
+                    st.rerun()
 
     # ── Library ────────────────────────────────────────────────────────────
     if not st.session_state.videos:
@@ -1410,7 +1434,7 @@ video{{width:100%;height:100%;display:block;object-fit:contain}}
 #pw{{position:relative;height:8px;background:#e5e7eb;border-radius:4px;cursor:pointer;margin-bottom:9px}}
 #pf{{height:100%;background:#f59e0b;border-radius:4px;width:0%;pointer-events:none}}
 .pm{{position:absolute;top:-5px;width:18px;height:18px;border-radius:50%;border:2px solid #fff;transform:translateX(-50%);cursor:pointer;z-index:5;box-shadow:0 2px 5px rgba(0,0,0,.2);transition:transform .12s}}
-.pm:hover{transform:translateX(-50%) scale(1.5)}
+.pm:hover{{transform:translateX(-50%) scale(1.5)}}
 .pml{{position:absolute;top:16px;transform:translateX(-50%);font-size:9px;white-space:nowrap;font-weight:600;pointer-events:none}}
 #ctrl{{display:flex;align-items:center;gap:10px}}
 #pb{{width:36px;height:36px;border-radius:50%;background:#f59e0b;border:none;cursor:pointer;font-size:14px;color:#111;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(245,158,11,.35);flex-shrink:0}}
