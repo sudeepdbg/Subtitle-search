@@ -367,24 +367,25 @@ Return this exact JSON structure:
 
 def _show_ai_meta(vm: VideoMetadata):
     meta = st.session_state.ai_meta.get(vm.video_id)
-    if not meta: return
+    if not meta:
+        return
 
-    # Single source of truth for the rating color
-    colors = {"G":"#16a34a","PG":"#2563eb","PG-13":"#d97706","R":"#dc2626"}
-    rating_color = colors.get(meta.get("content_rating","PG"), "#6b7280")
-
-    # Render unified card
+    # 1. UI: Unified Card (Uses your CSS class 'ai-intelligence-card')
+    rating_color = {"G":"#16a34a","PG":"#2563eb","PG-13":"#d97706","R":"#dc2626"}.get(meta.get("content_rating","PG"),"#6b7280")
+    
     st.markdown(f'''
         <div class="ai-intelligence-card">
-            <div style="display:flex; gap:16px; flex-wrap:wrap">
+            <div style="display:flex; align-items:flex-start; gap:16px; flex-wrap:wrap">
                 <div style="flex:1; min-width:220px">
-                    <div style="font-size:11px; font-weight:700; color:#92400e; margin-bottom:4px">AI SUMMARY</div>
-                    <div style="font-size:14px; line-height:1.6">{meta.get("summary","")}</div>
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:#92400e; margin-bottom:4px">Summary</div>
+                    <div style="font-size:14px; color:#111827; line-height:1.6">{meta.get("summary","")}</div>
                 </div>
-                <div style="display:flex; flex-direction:column; gap:8px; min-width:180px">
-                    <span style="background:{rating_color}; color:#fff; font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px; width:fit-content">
-                        {meta.get("content_rating","PG")}
-                    </span>
+                <div style="display:flex; flex-direction:column; gap:8px; min-width:160px">
+                    <div>
+                        <span style="background:{rating_color}; color:#fff; font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px">
+                            {meta.get("content_rating","PG")}
+                        </span>
+                    </div>
                     <div style="font-size:12px"><b>Genre:</b> {meta.get("primary_genre","—")}</div>
                     <div style="font-size:12px"><b>Mood:</b> {meta.get("mood","—")}</div>
                 </div>
@@ -392,31 +393,15 @@ def _show_ai_meta(vm: VideoMetadata):
         </div>
     ''', unsafe_allow_html=True)
 
-    with st.expander("🔍 SEO & Metadata Details"):
+    # 2. UI: Single SEO Expander
+    with st.expander("🔍 SEO Metadata"):
         st.text_input("SEO Title", value=meta.get("seo_title",""), key=f"seo_t_{vm.video_id}")
         st.text_area("SEO Description", value=meta.get("seo_description",""), key=f"seo_d_{vm.video_id}")
 
-    # Advertiser suitability
-    suit = meta.get("advertiser_suitability","Medium")
-    suit_color = {"High":"#16a34a","Medium":"#d97706","Low":"#dc2626"}.get(suit,"#6b7280")
-    st.markdown(
-        f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;'
-        f'padding:10px 14px;margin:8px 0;display:flex;align-items:center;gap:12px">'
-        f'<span style="font-size:12px;font-weight:700;color:{suit_color}">📢 Advertiser Suitability: {suit}</span>'
-        f'<span style="font-size:12px;color:#6b7280">{meta.get("advertiser_reason","")}</span>'
-        f'</div>', unsafe_allow_html=True)
-
-    # SEO fields
-    with st.expander("🔍 SEO Metadata"):
-        st.text_input("SEO Title", value=meta.get("seo_title",""), key=f"seo_t_{vm.video_id}")
-        st.text_area("SEO Description", value=meta.get("seo_description",""), key=f"seo_d_{vm.video_id}", height=70)
-        short = meta.get("short_description","")
-        if short: st.caption(f"**Short description:** {short}")
-
-    # Regenerate
-    if st.button("🔄 Regenerate AI Metadata", key=f"regen_meta_{vm.video_id}"):
+    # 3. Action: Unified Regenerate Button
+    if st.button("🔄 Regenerate Metadata", key=f"regen_{vm.video_id}"):
         srt_sample = " ".join(s.text for s in vm.scenes[:15])
-        with st.spinner("Regenerating…"):
+        with st.spinner("Regenerating..."):
             _generate_ai_meta(vm, srt_sample)
         st.rerun()
 
