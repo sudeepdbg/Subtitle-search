@@ -62,9 +62,8 @@ input, textarea, [data-baseweb="select"] > div {
     border-radius: 12px !important;
     background: linear-gradient(135deg, #fffbeb, #fef3c7) !important;
     border: 1px solid #fcd34d !important;
+    overflow: hidden !important; /* Forces the container to contain its content */
     clear: both !important;
-    visibility: visible !important;
-    opacity: 1 !important;
 }
 
 [data-testid="stExpander"] {
