@@ -74,4 +74,18 @@ input, textarea, [data-baseweb="select"] > div {
     border: 1px solid var(--border-color) !important;
 }
 
+/* Force the card to render visibly */
+.ai-intelligence-card {
+    display: block !important;
+    width: 100% !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    background: linear-gradient(135deg, #fffbeb, #fef3c7) !important;
+    border: 1px solid #fcd34d !important;
+    border-radius: 12px !important;
+    padding: 20px !important;
+    margin-bottom: 24px !important;
+    clear: both !important;
+}
+
 input:focus, textarea:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(245,158,11,.12) !important; }
