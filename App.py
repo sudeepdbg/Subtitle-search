@@ -49,12 +49,16 @@ st.set_page_config(
 # DESIGN SYSTEM — Fully light theme. No dark sidebar.
 # ══════════════════════════════════════════════════════════════════════════════
 def load_css():
-    with open("style.css", "r") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    """Loads the external CSS file into the Streamlit app."""
+    try:
+        with open("style.css", "r") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    except FileNotFoundError:
+        st.error("style.css not found. Please ensure it is in the root directory.")
 
 load_css()
-"""
-st.markdown(_CSS, unsafe_allow_html=True)
+
+# Deprecated: _CSS variable method removed for modularity
 
 
 # ══════════════════════════════════════════════════════════════════════════════
