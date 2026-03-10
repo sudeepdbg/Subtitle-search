@@ -7,17 +7,36 @@ import re
 import time
 import base64 as _b64
 import json as _json
-from typing import Optional
-
+from typing import List, Optional
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from pydantic import BaseModel, Field
+from groq import Groq
+import instructor
 
+# Your existing core imports
 from core.video_processor import VideoProcessor, VideoMetadata, fetch_youtube_transcript, fetch_youtube_metadata
 from core.scene_detector import Scene
 from core.ad_engine import AdMatchingEngine, create_default_inventory
 from core.search_engine import HybridSearchEngine
 from core.embeddings import _IAB_NAMES
+
+class VideoMetadataSchema(BaseModel):
+    summary: str
+    short_description: str = Field(..., max_length=15)
+    content_rating: str
+    rating_reason: str
+    primary_genre: str
+    target_audience: str
+    key_themes: List[str]
+    mood: str
+    keywords: List[str]
+    content_warnings: List[str]
+    advertiser_suitability: str
+    advertiser_reason: str
+    seo_title: str = Field(..., max_length=60)
+    seo_description: str = Field(..., max_length=155)
 
 st.set_page_config(
     page_title="Semantix · Video Intelligence",
@@ -367,8 +386,51 @@ with st.sidebar:
 
 # ── AI Metadata Generation ─────────────────────────────────────────────────
 def _generate_ai_meta(vm: VideoMetadata, transcript_sample: str):
-    """Call Claude to generate rich metadata for a video. Stores in session state."""
-    import json as _j
+    """Generates metadata using Pydantic validation via Groq."""
+    
+    prompt = f"Analyze this video: {vm.title}. Transcript: {transcript_sample[:2000]}"
+    
+    try:
+        # Initialize Groq client with instructor
+        # Note: Avoid hardcoding your key here; use st.secrets as shown
+        client = instructor.from_openai(
+            Groq(api_key=st.secrets["GROQ_API_KEY"]),
+            mode=instructor.Mode.JSON
+        )
+        
+        meta = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            response_model=VideoMetadataSchema,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        st.session_state.ai_meta[vm.video_id] = meta.model_dump()
+        return # STOP here if successful
+        
+    except Exception as e:
+        st.warning(f"Structured extraction via Groq failed: {e}. Falling back to heuristic.")
+        
+        # Fallback Logic
+        iab_list = list({c["name"] for s in vm.scenes for c in s.iab_categories[:2]})
+        pos = sum(1 for s in vm.scenes if s.sentiment.get("label")=="positive")
+        neg = sum(1 for s in vm.scenes if s.sentiment.get("label")=="negative")
+        mood = "Exciting" if pos > neg*2 else "Tense" if neg > pos else "Balanced"
+        
+        st.session_state.ai_meta[vm.video_id] = {
+            "summary": f"{vm.title} — {vm.fmt_duration()} duration with {vm.scene_count} scenes.",
+            "short_description": vm.title[:15],
+            "content_rating": "PG", 
+            "rating_reason": "General content",
+            "primary_genre": iab_list[0] if iab_list else "General",
+            "target_audience": "General audience",
+            "key_themes": iab_list[:4],
+            "mood": mood, 
+            "keywords": iab_list[:8],
+            "content_warnings": [],
+            "advertiser_suitability": "High",
+            "advertiser_reason": "Based on local scene analysis",
+            "seo_title": vm.title[:60],
+            "seo_description": f"{vm.title} — {vm.scene_count} scenes, {vm.fmt_duration()}"
+        }
 
     # Build scene summary for context
     scene_summary = "\n".join(
@@ -594,12 +656,15 @@ _IAB_CPM = {
 def _est_cpm(scene: "Scene") -> tuple:
     """Return (low_cpm, high_cpm) estimate in USD with engagement boost."""
     iab = scene.iab_categories[0]["name"] if scene.iab_categories else ""
-    lo, hi = _IAB_CPM["default"]
-    for key, vals in _IAB_CPM.items():
-        if key != "default" and key.lower() in iab.lower():
-            lo, hi = vals; break
-    boost = 1 + scene.engagement_score * 0.4
-    return round(lo * boost, 2), round(hi * boost, 2)
+    
+    # Get base rates
+    lo, hi = _IAB_CPM.get(iab, _IAB_CPM["default"])
+    
+    # Apply a multiplier based on engagement score (e.g., 0.8x to 1.2x)
+    # Assuming engagement_score is a normalized float between 0 and 1
+    boost = 0.8 + (0.4 * getattr(scene, 'engagement_score', 0.5))
+    
+    return (round(lo * boost, 2), round(hi * boost, 2))
 
 def _ad_similarity(ad: dict, scene: Scene) -> dict:
     tags = ad.get("tags","")
