@@ -370,21 +370,33 @@ def _show_ai_meta(vm: VideoMetadata):
     if not meta:
         return
 
-    # 1. UI: Unified Card (Uses your CSS class 'ai-intelligence-card')
+    # Color mapping for rating
     rating_color = {"G":"#16a34a","PG":"#2563eb","PG-13":"#d97706","R":"#dc2626"}.get(meta.get("content_rating","PG"),"#6b7280")
     
-    st.markdown(
-    '''<div class="ai-intelligence-card">
-        </div>''', 
-    unsafe_allow_html=True
-)
+    st.markdown(f'''
+        <div class="ai-intelligence-card">
+            <div style="display:flex; align-items:flex-start; gap:16px; flex-wrap:wrap">
+                <div style="flex:1; min-width:220px">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:#92400e; margin-bottom:4px">Summary</div>
+                    <div style="font-size:14px; color:#111827; line-height:1.6">{meta.get("summary","")}</div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:8px; min-width:160px">
+                    <div>
+                        <span style="background:{rating_color}; color:#fff; font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px">
+                            {meta.get("content_rating","PG")}
+                        </span>
+                    </div>
+                    <div style="font-size:12px"><b>Genre:</b> {meta.get("primary_genre","—")}</div>
+                    <div style="font-size:12px"><b>Mood:</b> {meta.get("mood","—")}</div>
+                </div>
+            </div>
+        </div>
+    ''', unsafe_allow_html=True)
 
-    # 2. UI: Single SEO Expander
     with st.expander("🔍 SEO Metadata"):
         st.text_input("SEO Title", value=meta.get("seo_title",""), key=f"seo_t_{vm.video_id}")
         st.text_area("SEO Description", value=meta.get("seo_description",""), key=f"seo_d_{vm.video_id}")
 
-    # 3. Action: Unified Regenerate Button
     if st.button("🔄 Regenerate Metadata", key=f"regen_{vm.video_id}"):
         srt_sample = " ".join(s.text for s in vm.scenes[:15])
         with st.spinner("Regenerating..."):
